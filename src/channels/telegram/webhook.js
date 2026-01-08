@@ -4,7 +4,6 @@
  */
 
 const express = require('express');
-const crypto = require('crypto');
 const axios = require('axios');
 const path = require('path');
 const fs = require('fs');
@@ -96,33 +95,34 @@ class TelegramWebhookHandler {
             return;
         }
 
-        // Parse command
-        const commandMatch = messageText.match(/^\/cmd\s+([A-Z0-9]{8})\s+(.+)$/i);
+        // Parse command - support both number and token
+        // /cmd 1 <command> or /cmd ABC12345 <command>
+        const commandMatch = messageText.match(/^\/cmd\s+(\d+|[A-Z0-9]{8})\s+(.+)$/i);
         if (!commandMatch) {
             // Check if it's a direct command without /cmd prefix
-            const directMatch = messageText.match(/^([A-Z0-9]{8})\s+(.+)$/);
+            const directMatch = messageText.match(/^(\d+|[A-Z0-9]{8})\s+(.+)$/);
             if (directMatch) {
                 await this._processCommand(chatId, directMatch[1], directMatch[2]);
             } else {
-                await this._sendMessage(chatId, 
-                    '❌ Invalid format. Use:\n`/cmd <TOKEN> <command>`\n\nExample:\n`/cmd ABC12345 analyze this code`',
+                await this._sendMessage(chatId,
+                    '❌ Invalid format. Use:\n`/cmd <NUMBER> <command>` or `/cmd <TOKEN> <command>`\n\nExample:\n`/cmd 1 analyze this code`',
                     { parse_mode: 'Markdown' });
             }
             return;
         }
 
-        const token = commandMatch[1].toUpperCase();
+        const identifier = commandMatch[1]; // Can be number or token
         const command = commandMatch[2];
 
-        await this._processCommand(chatId, token, command);
+        await this._processCommand(chatId, identifier, command);
     }
 
-    async _processCommand(chatId, token, command) {
-        // Find session by token
-        const session = await this._findSessionByToken(token);
+    async _processCommand(chatId, identifier, command) {
+        // Find session by number or token
+        const session = await this._findSessionByIdentifier(identifier);
         if (!session) {
-            await this._sendMessage(chatId, 
-                '❌ Invalid or expired token. Please wait for a new task notification.',
+            await this._sendMessage(chatId,
+                '❌ Invalid or expired session. Please wait for a new task notification.',
                 { parse_mode: 'Markdown' });
             return;
         }
@@ -147,7 +147,7 @@ class TelegramWebhookHandler {
                 { parse_mode: 'Markdown' });
             
             // Log command execution
-            this.logger.info(`Command injected - User: ${chatId}, Token: ${token}, Command: ${command}`);
+            this.logger.info(`Command injected - User: ${chatId}, Session: ${identifier}, Command: ${command}`);
             
         } catch (error) {
             this.logger.error('Command injection failed:', error.message);
@@ -165,23 +165,23 @@ class TelegramWebhookHandler {
         await this._answerCallbackQuery(callbackQuery.id);
         
         if (data.startsWith('personal:')) {
-            const token = data.split(':')[1];
+            const sessionNumber = data.split(':')[1];
             // Send personal chat command format
             await this._sendMessage(chatId,
-                `📝 *Personal Chat Command Format:*\n\n\`/cmd ${token} <your command>\`\n\n*Example:*\n\`/cmd ${token} please analyze this code\`\n\n💡 *Copy and paste the format above, then add your command!*`,
+                `📝 *Personal Chat Command Format:*\n\n\`/cmd ${sessionNumber} <your command>\`\n\n*Example:*\n\`/cmd ${sessionNumber} show me the latest changes\`\n\n💡 *Just type the number and your command!*`,
                 { parse_mode: 'Markdown' });
         } else if (data.startsWith('group:')) {
-            const token = data.split(':')[1];
+            const sessionNumber = data.split(':')[1];
             // Send group chat command format with @bot_name
             const botUsername = await this._getBotUsername();
             await this._sendMessage(chatId,
-                `👥 *Group Chat Command Format:*\n\n\`@${botUsername} /cmd ${token} <your command>\`\n\n*Example:*\n\`@${botUsername} /cmd ${token} please analyze this code\`\n\n💡 *Copy and paste the format above, then add your command!*`,
+                `👥 *Group Chat Command Format:*\n\n\`@${botUsername} /cmd ${sessionNumber} <your command>\`\n\n*Example:*\n\`@${botUsername} /cmd ${sessionNumber} show me the latest changes\`\n\n💡 *Just type the number and your command!*`,
                 { parse_mode: 'Markdown' });
         } else if (data.startsWith('session:')) {
-            const token = data.split(':')[1];
+            const sessionNumber = data.split(':')[1];
             // For backward compatibility - send help message for old callback buttons
             await this._sendMessage(chatId,
-                `📝 *How to send a command:*\n\nType:\n\`/cmd ${token} <your command>\`\n\nExample:\n\`/cmd ${token} please analyze this code\`\n\n💡 *Tip:* New notifications have a button that auto-fills the command for you!`,
+                `📝 *How to send a command:*\n\nType:\n\`/cmd ${sessionNumber} <your command>\`\n\nExample:\n\`/cmd ${sessionNumber} show me the latest changes\`\n\n💡 *Just type the number and your command!*`,
                 { parse_mode: 'Markdown' });
         }
     }
@@ -189,10 +189,10 @@ class TelegramWebhookHandler {
     async _sendWelcomeMessage(chatId) {
         const message = `🤖 *Welcome to Claude Code Remote Bot!*\n\n` +
             `I'll notify you when Claude completes tasks or needs input.\n\n` +
-            `When you receive a notification with a token, you can send commands back using:\n` +
-            `\`/cmd <TOKEN> <your command>\`\n\n` +
+            `When you receive a notification, you can send commands back using simple numbers:\n` +
+            `\`/cmd 1 <your command>\`\n\n` +
             `Type /help for more information.`;
-        
+
         await this._sendMessage(chatId, message, { parse_mode: 'Markdown' });
     }
 
@@ -201,14 +201,18 @@ class TelegramWebhookHandler {
             `*Commands:*\n` +
             `• \`/start\` - Welcome message\n` +
             `• \`/help\` - Show this help\n` +
-            `• \`/cmd <TOKEN> <command>\` - Send command to Claude\n\n` +
+            `• \`/cmd <NUMBER> <command>\` - Send command to Claude\n\n` +
             `*Example:*\n` +
-            `\`/cmd ABC12345 analyze the performance of this function\`\n\n` +
+            `\`/cmd 1 show me the latest changes\`\n\n` +
+            `*Session Numbering:*\n` +
+            `• #1 is always the most recent session (any project)\n` +
+            `• As new sessions are created, older ones become #2, #3, etc.\n` +
+            `• Each notification shows which project it belongs to\n` +
+            `• Sessions expire after 24 hours\n\n` +
             `*Tips:*\n` +
-            `• Tokens are case-insensitive\n` +
-            `• Tokens expire after 24 hours\n` +
-            `• You can also just type \`TOKEN command\` without /cmd`;
-        
+            `• You can type \`1 <command>\` without /cmd prefix\n` +
+            `• Old token format (ABC12345) still works`;
+
         await this._sendMessage(chatId, message, { parse_mode: 'Markdown' });
     }
 
@@ -254,24 +258,52 @@ class TelegramWebhookHandler {
         return this.config.botUsername || 'claude_remote_bot';
     }
 
-    async _findSessionByToken(token) {
+    async _findSessionByIdentifier(identifier) {
         const files = fs.readdirSync(this.sessionsDir);
-        
+        const sessions = [];
+
+        // First, load all active sessions
         for (const file of files) {
             if (!file.endsWith('.json')) continue;
-            
+
             const sessionPath = path.join(this.sessionsDir, file);
             try {
                 const session = JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
-                if (session.token === token) {
-                    return session;
+
+                // Skip expired sessions
+                if (session.expiresAt && session.expiresAt < Math.floor(Date.now() / 1000)) {
+                    continue;
                 }
+
+                sessions.push(session);
             } catch (error) {
                 this.logger.error(`Failed to read session file ${file}:`, error.message);
             }
         }
-        
+
+        // Check if identifier is a number
+        if (/^\d+$/.test(identifier)) {
+            const sessionNumber = parseInt(identifier);
+
+            // Sort sessions by creation time (newest first)
+            sessions.sort((a, b) => b.createdAt - a.createdAt);
+
+            // Find session by number (1 = most recent, 2 = second most recent, etc.)
+            if (sessionNumber > 0 && sessionNumber <= sessions.length) {
+                return sessions[sessionNumber - 1];
+            }
+        } else {
+            // Find by token
+            const token = identifier.toUpperCase();
+            return sessions.find(s => s.token === token) || null;
+        }
+
         return null;
+    }
+
+    async _findSessionByToken(token) {
+        // Backward compatibility - redirect to _findSessionByIdentifier
+        return this._findSessionByIdentifier(token);
     }
 
     async _removeSession(sessionId) {

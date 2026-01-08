@@ -51,6 +51,18 @@ temp/
 # Data files (session-specific, should not be committed)
 src/data/
 !src/data/.gitkeep
+data/
+*.db
+*.sqlite
+*.sqlite3
 
 # Claude configuration (user-specific)
 CLAUDE.md
+
+# Generated secrets and keys
+config/servers.json
+*.pem
+*.key
+
+# ngrok logs and temporary files
+ngrok.log

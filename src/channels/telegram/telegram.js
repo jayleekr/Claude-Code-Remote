@@ -66,16 +66,64 @@ class TelegramChannel extends NotificationChannel {
     _getCurrentTmuxSession() {
         try {
             // Try to get current tmux session
-            const tmuxSession = execSync('tmux display-message -p "#S"', { 
+            const tmuxSession = execSync('tmux display-message -p "#S"', {
                 encoding: 'utf8',
                 stdio: ['ignore', 'pipe', 'ignore']
             }).trim();
-            
+
             return tmuxSession || null;
-        } catch (error) {
+        } catch {
             // Not in a tmux session or tmux not available
             return null;
         }
+    }
+
+    /**
+     * Split long messages into chunks respecting Telegram's 4096 character limit
+     * Attempts to split at newlines for better readability
+     * @param {string} text - The text to split
+     * @param {number} maxLength - Maximum length per chunk (default: 4090 to leave room for part indicators)
+     * @returns {string[]} Array of message chunks
+     */
+    _splitMessage(text, maxLength = 4090) {
+        // If text fits in one message, return as-is
+        if (text.length <= maxLength) {
+            return [text];
+        }
+
+        const chunks = [];
+        const lines = text.split('\n');
+        let currentChunk = '';
+
+        for (const line of lines) {
+            const testChunk = currentChunk + (currentChunk ? '\n' : '') + line;
+
+            // If adding this line exceeds limit
+            if (testChunk.length > maxLength) {
+                // Save current chunk if not empty
+                if (currentChunk) {
+                    chunks.push(currentChunk);
+                    currentChunk = line;
+                } else {
+                    // Single line too long, force split
+                    let remainingLine = line;
+                    while (remainingLine.length > maxLength) {
+                        chunks.push(remainingLine.substring(0, maxLength));
+                        remainingLine = remainingLine.substring(maxLength);
+                    }
+                    currentChunk = remainingLine;
+                }
+            } else {
+                currentChunk = testChunk;
+            }
+        }
+
+        // Add remaining chunk
+        if (currentChunk) {
+            chunks.push(currentChunk);
+        }
+
+        return chunks;
     }
 
     async _getBotUsername() {
@@ -126,43 +174,63 @@ class TelegramChannel extends NotificationChannel {
 
         // Generate Telegram message
         const messageText = this._generateTelegramMessage(notification, sessionId, token);
-        
+
+        // Split message into chunks if needed
+        const chunks = this._splitMessage(messageText);
+
         // Determine recipient (chat or group)
         const chatId = this.config.groupId || this.config.chatId;
-        const isGroupChat = !!this.config.groupId;
-        
-        // Create buttons using callback_data instead of inline query
-        // This avoids the automatic @bot_name addition
+
+        // Create buttons - always use "1" since new sessions are always #1
         const buttons = [
             [
                 {
                     text: '📝 Personal Chat',
-                    callback_data: `personal:${token}`
+                    callback_data: 'personal:1'
                 },
                 {
-                    text: '👥 Group Chat', 
-                    callback_data: `group:${token}`
+                    text: '👥 Group Chat',
+                    callback_data: 'group:1'
                 }
             ]
         ];
-        
-        const requestData = {
-            chat_id: chatId,
-            text: messageText,
-            parse_mode: 'Markdown',
-            reply_markup: {
-                inline_keyboard: buttons
-            }
-        };
 
         try {
-            const response = await axios.post(
-                `${this.apiBaseUrl}/bot${this.config.botToken}/sendMessage`,
-                requestData,
-                this._getNetworkOptions()
-            );
+            // Send all chunks
+            for (let i = 0; i < chunks.length; i++) {
+                const isLastChunk = i === chunks.length - 1;
 
-            this.logger.info(`Telegram message sent successfully, Session: ${sessionId}`);
+                // Add part indicator if multiple chunks
+                let chunkText = chunks[i];
+                if (chunks.length > 1) {
+                    chunkText = `📄 *Part ${i + 1}/${chunks.length}*\n\n${chunkText}`;
+                }
+
+                const requestData = {
+                    chat_id: chatId,
+                    text: chunkText,
+                    parse_mode: 'Markdown',
+                    // Only add buttons to the last chunk
+                    ...(isLastChunk && {
+                        reply_markup: {
+                            inline_keyboard: buttons
+                        }
+                    })
+                };
+
+                await axios.post(
+                    `${this.apiBaseUrl}/bot${this.config.botToken}/sendMessage`,
+                    requestData,
+                    this._getNetworkOptions()
+                );
+
+                // Small delay between chunks to ensure proper ordering
+                if (i < chunks.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                }
+            }
+
+            this.logger.info(`Telegram message sent successfully (${chunks.length} part${chunks.length > 1 ? 's' : ''}), Session: ${sessionId}`);
             return true;
         } catch (error) {
             this.logger.error('Failed to send Telegram message:', error.response?.data || error.message);
@@ -172,36 +240,29 @@ class TelegramChannel extends NotificationChannel {
         }
     }
 
-    _generateTelegramMessage(notification, sessionId, token) {
+    _generateTelegramMessage(notification, _sessionId, _token) {
         const type = notification.type;
         const emoji = type === 'completed' ? '✅' : '⏳';
         const status = type === 'completed' ? 'Completed' : 'Waiting for Input';
-        
+
         let messageText = `${emoji} *Claude Task ${status}*\n`;
         messageText += `*Project:* ${notification.project}\n`;
-        messageText += `*Session Token:* \`${token}\`\n\n`;
-        
+        messageText += `*Session:* #1 (most recent)\n\n`;
+
         if (notification.metadata) {
             if (notification.metadata.userQuestion) {
-                messageText += `📝 *Your Question:*\n${notification.metadata.userQuestion.substring(0, 200)}`;
-                if (notification.metadata.userQuestion.length > 200) {
-                    messageText += '...';
-                }
-                messageText += '\n\n';
+                messageText += `📝 *Your Question:*\n${notification.metadata.userQuestion}\n\n`;
             }
-            
+
             if (notification.metadata.claudeResponse) {
-                messageText += `🤖 *Claude Response:*\n${notification.metadata.claudeResponse.substring(0, 300)}`;
-                if (notification.metadata.claudeResponse.length > 300) {
-                    messageText += '...';
-                }
-                messageText += '\n\n';
+                messageText += `🤖 *Claude Response:*\n${notification.metadata.claudeResponse}\n\n`;
             }
         }
-        
-        messageText += `💬 *To send a new command:*\n`;
-        messageText += `Reply with: \`/cmd ${token} <your command>\`\n`;
-        messageText += `Example: \`/cmd ${token} Please analyze this code\``;
+
+        messageText += `💬 *To send a command:*\n`;
+        messageText += `\`/cmd 1 <your command>\`\n\n`;
+        messageText += `💡 *Tip:* #1 is always the most recent session across all projects.\n`;
+        messageText += `As new sessions are created, older sessions become #2, #3, etc.`;
 
         return messageText;
     }
@@ -222,8 +283,9 @@ class TelegramChannel extends NotificationChannel {
 
         const sessionFile = path.join(this.sessionsDir, `${sessionId}.json`);
         fs.writeFileSync(sessionFile, JSON.stringify(session, null, 2));
-        
-        this.logger.debug(`Session created: ${sessionId}`);
+
+        this.logger.debug(`Session created: ${sessionId} (${notification.project})`);
+        return session;
     }
 
     async _removeSession(sessionId) {

@@ -8,6 +8,7 @@
 const path = require('path');
 const fs = require('fs');
 const dotenv = require('dotenv');
+const axios = require('axios');
 
 // Load environment variables from the project directory
 const projectDir = path.dirname(__filename);
@@ -36,10 +37,188 @@ const TelegramChannel = require('./src/channels/telegram/telegram');
 const DesktopChannel = require('./src/channels/local/desktop');
 const EmailChannel = require('./src/channels/email/smtp');
 
+/**
+ * Find Claude project root by looking for .claude directory
+ * @param {string} startDir - Starting directory
+ * @returns {string|null} - Project root directory or null
+ */
+function findClaudeProjectRoot(startDir) {
+    let currentPath = startDir;
+    const root = path.parse(startDir).root;
+
+    while (currentPath !== root) {
+        const claudeDir = path.join(currentPath, '.claude');
+        if (fs.existsSync(claudeDir)) {
+            return currentPath;
+        }
+        currentPath = path.dirname(currentPath);
+    }
+
+    return null;
+}
+
+/**
+ * Extract last conversation from Claude Code jsonl log
+ * @param {string} currentDir - Current working directory
+ * @returns {Object|null} - { userQuestion, claudeResponse } or null
+ */
+function extractLastConversation(currentDir) {
+    try {
+        // Find Claude project root (look for .claude directory)
+        const projectRoot = findClaudeProjectRoot(currentDir) || currentDir;
+        console.log('🔍 Project root:', projectRoot);
+
+        // Build Claude project directory path
+        // Claude converts underscores to hyphens in directory names
+        const homeDir = require('os').homedir();
+        const projectSlug = projectRoot.replace(/\//g, '-').replace(/_/g, '-');
+        const claudeProjectDir = path.join(homeDir, '.claude', 'projects', projectSlug);
+
+        if (!fs.existsSync(claudeProjectDir)) {
+            console.log('⚠️ Claude project directory not found:', claudeProjectDir);
+            return null;
+        }
+
+        // Find most recent .jsonl file
+        const files = fs.readdirSync(claudeProjectDir)
+            .filter(f => f.endsWith('.jsonl') && !f.startsWith('agent-'))
+            .map(f => ({
+                name: f,
+                path: path.join(claudeProjectDir, f),
+                mtime: fs.statSync(path.join(claudeProjectDir, f)).mtime
+            }))
+            .sort((a, b) => b.mtime - a.mtime);
+
+        if (files.length === 0) {
+            console.log('⚠️ No conversation log files found');
+            return null;
+        }
+
+        const latestFile = files[0].path;
+        console.log('📖 Reading conversation from:', latestFile);
+
+        // Read last few lines to get recent conversation
+        const content = fs.readFileSync(latestFile, 'utf8');
+        const lines = content.trim().split('\n').filter(l => l.trim());
+
+        let userQuestion = null;
+        let claudeResponse = null;
+
+        // Read backwards to find last user message and assistant response
+        for (let i = lines.length - 1; i >= 0 && i >= lines.length - 50; i--) {
+            try {
+                const entry = JSON.parse(lines[i]);
+
+                // Find user message
+                if (!userQuestion && entry.type === 'user' && entry.message?.content) {
+                    const content = entry.message.content;
+                    if (typeof content === 'string') {
+                        userQuestion = content.substring(0, 500);
+                    } else if (Array.isArray(content)) {
+                        const textContent = content.find(c => c.type === 'text');
+                        if (textContent) {
+                            userQuestion = textContent.text.substring(0, 500);
+                        }
+                    }
+                }
+
+                // Find assistant response with actual text content
+                if (!claudeResponse && entry.type === 'assistant' && entry.message?.content) {
+                    const content = entry.message.content;
+                    if (typeof content === 'string') {
+                        claudeResponse = content.substring(0, 2000);
+                    } else if (Array.isArray(content)) {
+                        // Look for text content first, skip tool-only responses
+                        let responseText = '';
+                        for (const item of content) {
+                            if (item.type === 'text' && item.text) {
+                                responseText += item.text + '\n';
+                            }
+                        }
+
+                        // Only use this response if it has actual text content
+                        if (responseText.trim().length > 0) {
+                            claudeResponse = responseText.substring(0, 2000);
+                        }
+                        // If no text, continue searching for a better response
+                    }
+                }
+
+                // Stop if we found both
+                if (userQuestion && claudeResponse) {
+                    break;
+                }
+            } catch {
+                // Skip malformed lines
+                continue;
+            }
+        }
+
+        if (userQuestion || claudeResponse) {
+            console.log('✅ Extracted conversation context');
+            console.log('   User:', userQuestion ? userQuestion.substring(0, 100) + '...' : 'N/A');
+            console.log('   Assistant:', claudeResponse ? claudeResponse.substring(0, 100) + '...' : 'N/A');
+            return { userQuestion, claudeResponse };
+        }
+
+        return null;
+    } catch (error) {
+        console.error('⚠️ Failed to extract conversation:', error.message);
+        return null;
+    }
+}
+
+/**
+ * Send notification to central hub with retry logic
+ * @param {string} serverId - Server identifier
+ * @param {Object} notification - Notification object
+ * @param {string} endpoint - Central hub endpoint URL
+ * @param {string} secret - Shared secret for authentication
+ * @returns {boolean} - Success or failure
+ */
+async function sendToCentralHub(serverId, notification, endpoint, secret) {
+    const maxRetries = 3;
+    let attempt = 0;
+
+    while (attempt < maxRetries) {
+        try {
+            console.log(`📤 Attempt ${attempt + 1}/${maxRetries}: Sending to central hub...`);
+
+            await axios.post(endpoint, {
+                serverId,
+                type: notification.type,
+                project: notification.project,
+                metadata: notification.metadata
+            }, {
+                headers: {
+                    'X-Shared-Secret': secret,
+                    'Content-Type': 'application/json'
+                },
+                timeout: 5000
+            });
+
+            console.log('✅ Notification sent to central hub');
+            return true;
+        } catch (error) {
+            attempt++;
+            console.error(`❌ Attempt ${attempt} failed:`, error.message);
+
+            if (attempt < maxRetries) {
+                const delay = 1000 * attempt; // Exponential backoff
+                console.log(`⏳ Waiting ${delay}ms before retry...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+    }
+
+    console.error('❌ All retry attempts failed');
+    return false;
+}
+
 async function sendHookNotification() {
     try {
         console.log('🔔 Claude Hook: Sending notifications...');
-        
+
         // Get notification type from command line argument
         const notificationType = process.argv[2] || 'completed';
         
@@ -90,9 +269,10 @@ async function sendHookNotification() {
             }
         }
         
-        // Get current working directory and tmux session
+        // Get current working directory and project root
         const currentDir = process.cwd();
-        const projectName = path.basename(currentDir);
+        const projectRoot = findClaudeProjectRoot(currentDir) || currentDir;
+        const projectName = path.basename(projectRoot);
         
         // Try to get current tmux session
         let tmuxSession = process.env.TMUX_SESSION || 'claude-real';
@@ -105,23 +285,54 @@ async function sendHookNotification() {
             if (sessionOutput) {
                 tmuxSession = sessionOutput;
             }
-        } catch (error) {
+        } catch {
             // Not in tmux or tmux not available, use default
         }
-        
-        // Create notification
+
+        // Extract conversation context from Claude logs
+        const conversation = extractLastConversation(currentDir);
+
+        // Create notification with metadata
         const notification = {
             type: notificationType,
             title: `Claude ${notificationType === 'completed' ? 'Task Completed' : 'Waiting for Input'}`,
             message: `Claude has ${notificationType === 'completed' ? 'completed a task' : 'is waiting for input'}`,
-            project: projectName
-            // Don't set metadata here - let TelegramChannel extract real conversation content
+            project: projectName,
+            metadata: conversation ? {
+                userQuestion: conversation.userQuestion,
+                claudeResponse: conversation.claudeResponse,
+                tmuxSession: tmuxSession
+            } : {
+                tmuxSession: tmuxSession
+            }
         };
         
         console.log(`📱 Sending ${notificationType} notification for project: ${projectName}`);
         console.log(`🖥️ Tmux session: ${tmuxSession}`);
-        
-        // Send notifications to all configured channels
+
+        // Check if central hub is configured
+        const centralHubEndpoint = process.env.CENTRAL_HUB_ENDPOINT;
+        const serverId = process.env.SERVER_ID || 'local';
+        const sharedSecret = process.env.SHARED_SECRET;
+
+        if (centralHubEndpoint && sharedSecret) {
+            console.log(`🌐 Central hub mode enabled for server: ${serverId}`);
+            console.log(`📍 Hub endpoint: ${centralHubEndpoint}`);
+
+            // Send to central hub instead of direct channels
+            const hubSuccess = await sendToCentralHub(serverId, notification, centralHubEndpoint, sharedSecret);
+
+            if (hubSuccess) {
+                console.log('\n✅ Notification successfully sent to central hub');
+                console.log('📋 Central hub will forward to Telegram');
+                return; // Exit early, hub will handle the rest
+            } else {
+                console.warn('\n⚠️ Failed to send to central hub, falling back to direct channels...');
+                // Continue with fallback to direct channels
+            }
+        }
+
+        // Send notifications to all configured channels (fallback or no hub configured)
         for (const { name, channel } of channels) {
             try {
                 console.log(`📤 Sending to ${name}...`);

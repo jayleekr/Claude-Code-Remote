@@ -1,0 +1,27 @@
+{
+  "central": {
+    "webhookPort": 3000,
+    "notificationPort": 3001,
+    "ngrokEnabled": true,
+    "sharedSecret": "REPLACE_WITH_SECURE_SECRET"
+  },
+  "servers": [
+    {
+      "id": "local",
+      "alias": "local",
+      "type": "local",
+      "hostname": "localhost"
+    },
+    {
+      "id": "kr4",
+      "alias": "kr4",
+      "type": "remote",
+      "hostname": "builder-kr-4.kr.sonatus.com",
+      "ssh": {
+        "user": "jay.lee",
+        "port": 22,
+        "keyPath": "~/.ssh/id_ed25519"
+      }
+    }
+  ]
+}
