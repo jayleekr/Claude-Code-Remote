@@ -28,8 +28,55 @@ fi
 
 # Check Node.js
 if ! command -v node &> /dev/null; then
-    echo -e "${RED}❌ Node.js is not installed${NC}"
-    echo "Please install Node.js first: https://nodejs.org/"
+    echo -e "${YELLOW}⚠️  Node.js is not installed${NC}"
+    echo ""
+    echo "🔧 Installing Node.js..."
+
+    # Try to install Node.js automatically
+    if command -v curl &> /dev/null; then
+        # Try nvm installation (user-level, no sudo required)
+        echo "📦 Attempting to install Node.js via nvm..."
+        export NVM_DIR="$HOME/.nvm"
+
+        # Install nvm
+        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash 2>/dev/null
+
+        # Load nvm
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+        # Install Node.js LTS
+        if command -v nvm &> /dev/null; then
+            nvm install --lts
+            nvm use --lts
+            echo -e "${GREEN}✅ Node.js installed via nvm${NC}"
+        else
+            echo -e "${RED}❌ Automatic installation failed${NC}"
+            echo ""
+            echo "Please install Node.js manually:"
+            echo ""
+            echo "Option 1: Using nvm (recommended for non-root users)"
+            echo "  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash"
+            echo "  source ~/.bashrc"
+            echo "  nvm install --lts"
+            echo ""
+            echo "Option 2: Using apt (requires sudo)"
+            echo "  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -"
+            echo "  sudo apt-get install -y nodejs"
+            echo ""
+            echo "Then run this installer again."
+            exit 1
+        fi
+    else
+        echo -e "${RED}❌ curl is not available${NC}"
+        echo "Please install Node.js manually: https://nodejs.org/"
+        exit 1
+    fi
+fi
+
+# Verify Node.js is now available
+if ! command -v node &> /dev/null; then
+    echo -e "${RED}❌ Node.js installation failed${NC}"
+    echo "Please install Node.js manually and try again."
     exit 1
 fi
 
