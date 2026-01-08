@@ -160,9 +160,10 @@ Example: /cmd ${identifier} analyze code`;
      */
     start() {
         return new Promise((resolve) => {
-            this.server = this.app.listen(this.port, () => {
+            this.server = this.app.listen(this.port, '0.0.0.0', () => {
                 console.log(`🚀 NotificationAggregator listening on port ${this.port}`);
-                console.log(`📍 Endpoint: http://localhost:${this.port}/notify`);
+                console.log(`📍 Local endpoint: http://localhost:${this.port}/notify`);
+                console.log(`📍 Remote endpoint: http://0.0.0.0:${this.port}/notify`);
                 resolve();
             });
         });
