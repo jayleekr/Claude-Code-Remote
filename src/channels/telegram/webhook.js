@@ -118,8 +118,8 @@ class TelegramWebhookHandler {
             return;
         }
 
-        // Check if session is expired
-        if (session.expiresAt < Date.now()) {
+        // Check if session is expired (expiresAt is in seconds, Date.now() is in milliseconds)
+        if (session.expiresAt * 1000 < Date.now()) {
             await this._sendMessage(chatId,
                 '❌ Session has expired. Please wait for a new task notification.',
                 { parse_mode: 'Markdown' });
