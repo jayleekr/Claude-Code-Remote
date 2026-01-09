@@ -92,6 +92,12 @@ class TelegramWebhookHandler {
             return;
         }
 
+        // Handle /sessions or /list command
+        if (messageText === '/sessions' || messageText === '/list') {
+            await this._sendSessionsList(chatId);
+            return;
+        }
+
         // Parse command - support server:number format
         // /cmd kr4:1 <command> or /cmd local:1 <command> or /cmd ABC12345 <command>
         const commandMatch = messageText.match(/^\/cmd\s+([a-z0-9]+:\d+|[A-Z0-9]{8})\s+(.+)$/i);
@@ -191,8 +197,10 @@ class TelegramWebhookHandler {
             `*Commands:*\n` +
             `• \`/start\` - Welcome message\n` +
             `• \`/help\` - Show this help\n` +
+            `• \`/sessions\` or \`/list\` - List all active sessions\n` +
             `• \`/cmd <server>:<number> <command>\` - Send command to Claude\n\n` +
             `*Examples:*\n` +
+            `\`/sessions\` - Show all active sessions\n` +
             `\`/cmd kr4:1 analyze this code\`\n` +
             `\`/cmd local:1 show me the latest changes\`\n\n` +
             `*Multi-Server Support:*\n` +
@@ -205,6 +213,60 @@ class TelegramWebhookHandler {
             `• \`aws1:1\` - Session #1 on AWS server (if configured)`;
 
         await this._sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    }
+
+    async _sendSessionsList(chatId) {
+        try {
+            // Get all active sessions from SessionManager
+            const sessions = this.sessionManager.getAllSessions();
+
+            if (!sessions || sessions.length === 0) {
+                await this._sendMessage(chatId,
+                    '📋 *Active Sessions*\n\n' +
+                    'No active sessions found.\n\n' +
+                    'Sessions are created when Claude Code sends notifications.',
+                    { parse_mode: 'Markdown' });
+                return;
+            }
+
+            // Group sessions by server
+            const sessionsByServer = {};
+            for (const session of sessions) {
+                if (!sessionsByServer[session.serverId]) {
+                    sessionsByServer[session.serverId] = [];
+                }
+                sessionsByServer[session.serverId].push(session);
+            }
+
+            // Format message
+            let message = `📋 *Active Sessions* (${sessions.length} total)\n\n`;
+
+            for (const [serverId, serverSessions] of Object.entries(sessionsByServer)) {
+                message += `🖥️ *${serverId.toUpperCase()}* (${serverSessions.length})\n`;
+
+                for (const session of serverSessions) {
+                    const sessionId = `${session.serverId}:${session.serverNumber}`;
+                    const expiresIn = Math.floor((session.expiresAt * 1000 - Date.now()) / 1000 / 3600); // hours
+
+                    message += `  • \`${sessionId}\` - ${session.project}\n`;
+                    message += `    Token: \`${session.token}\`\n`;
+                    message += `    Tmux: \`${session.tmuxSession}\`\n`;
+                    message += `    Expires: ${expiresIn}h\n`;
+                }
+                message += '\n';
+            }
+
+            message += `💡 *Usage:* \`/cmd <session> <command>\`\n`;
+            message += `Example: \`/cmd kr4:1 pwd\``;
+
+            await this._sendMessage(chatId, message, { parse_mode: 'Markdown' });
+
+        } catch (error) {
+            this.logger.error('Failed to get sessions list:', error.message);
+            await this._sendMessage(chatId,
+                '❌ Failed to retrieve sessions list. Please try again later.',
+                { parse_mode: 'Markdown' });
+        }
     }
 
     _isAuthorized(userId, chatId) {
