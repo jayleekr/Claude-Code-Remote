@@ -169,8 +169,32 @@ hook_path = '$HOOK_PATH'
 if 'hooks' not in settings:
     settings['hooks'] = {}
 
-settings['hooks']['postToolUse'] = f'node {hook_path} completed'
-settings['hooks']['notification'] = f'node {hook_path} waiting'
+# Configure hooks in the correct format for Claude Code
+settings['hooks']['Stop'] = [
+    {
+        "matcher": "*",
+        "hooks": [
+            {
+                "type": "command",
+                "command": f"node {hook_path} completed",
+                "timeout": 5
+            }
+        ]
+    }
+]
+
+settings['hooks']['SubagentStop'] = [
+    {
+        "matcher": "*",
+        "hooks": [
+            {
+                "type": "command",
+                "command": f"node {hook_path} waiting",
+                "timeout": 5
+            }
+        ]
+    }
+]
 
 with open(settings_file, 'w') as f:
     json.dump(settings, f, indent=2)
