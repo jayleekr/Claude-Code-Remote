@@ -5,21 +5,18 @@
 
 const express = require('express');
 const axios = require('axios');
-const path = require('path');
-const fs = require('fs');
 const Logger = require('../../core/logger');
-const ControllerInjector = require('../../utils/controller-injector');
 
 class TelegramWebhookHandler {
     constructor(config = {}) {
         this.config = config;
         this.logger = new Logger('TelegramWebhook');
-        this.sessionsDir = path.join(__dirname, '../../data/sessions');
-        this.injector = new ControllerInjector();
+        this.sessionManager = config.sessionManager; // Injected from hub
+        this.commandExecutor = config.commandExecutor; // Injected from hub
         this.app = express();
         this.apiBaseUrl = 'https://api.telegram.org';
         this.botUsername = null; // Cache for bot username
-        
+
         this._setupMiddleware();
         this._setupRoutes();
     }
@@ -95,31 +92,25 @@ class TelegramWebhookHandler {
             return;
         }
 
-        // Parse command - support both number and token
-        // /cmd 1 <command> or /cmd ABC12345 <command>
-        const commandMatch = messageText.match(/^\/cmd\s+(\d+|[A-Z0-9]{8})\s+(.+)$/i);
+        // Parse command - support server:number format
+        // /cmd kr4:1 <command> or /cmd local:1 <command> or /cmd ABC12345 <command>
+        const commandMatch = messageText.match(/^\/cmd\s+([a-z0-9]+:\d+|[A-Z0-9]{8})\s+(.+)$/i);
         if (!commandMatch) {
-            // Check if it's a direct command without /cmd prefix
-            const directMatch = messageText.match(/^(\d+|[A-Z0-9]{8})\s+(.+)$/);
-            if (directMatch) {
-                await this._processCommand(chatId, directMatch[1], directMatch[2]);
-            } else {
-                await this._sendMessage(chatId,
-                    '❌ Invalid format. Use:\n`/cmd <NUMBER> <command>` or `/cmd <TOKEN> <command>`\n\nExample:\n`/cmd 1 analyze this code`',
-                    { parse_mode: 'Markdown' });
-            }
+            await this._sendMessage(chatId,
+                '❌ Invalid format. Use:\n`/cmd <server>:<number> <command>`\n\nExample:\n`/cmd kr4:1 analyze this code`\n`/cmd local:1 show me the code`',
+                { parse_mode: 'Markdown' });
             return;
         }
 
-        const identifier = commandMatch[1]; // Can be number or token
+        const identifier = commandMatch[1]; // server:number or token
         const command = commandMatch[2];
 
         await this._processCommand(chatId, identifier, command);
     }
 
     async _processCommand(chatId, identifier, command) {
-        // Find session by number or token
-        const session = await this._findSessionByIdentifier(identifier);
+        // Find session via SessionManager
+        const session = await this.sessionManager.findSession(identifier);
         if (!session) {
             await this._sendMessage(chatId,
                 '❌ Invalid or expired session. Please wait for a new task notification.',
@@ -128,30 +119,29 @@ class TelegramWebhookHandler {
         }
 
         // Check if session is expired
-        if (session.expiresAt < Math.floor(Date.now() / 1000)) {
-            await this._sendMessage(chatId, 
-                '❌ Token has expired. Please wait for a new task notification.',
+        if (session.expiresAt < Date.now()) {
+            await this._sendMessage(chatId,
+                '❌ Session has expired. Please wait for a new task notification.',
                 { parse_mode: 'Markdown' });
-            await this._removeSession(session.id);
             return;
         }
 
         try {
-            // Inject command into tmux session
+            // Execute command via CommandExecutor
             const tmuxSession = session.tmuxSession || 'default';
-            await this.injector.injectCommand(command, tmuxSession);
-            
+            await this.commandExecutor.execute(session.serverId, command, tmuxSession);
+
             // Send confirmation
-            await this._sendMessage(chatId, 
-                `✅ *Command sent successfully*\n\n📝 *Command:* ${command}\n🖥️ *Session:* ${tmuxSession}\n\nClaude is now processing your request...`,
+            await this._sendMessage(chatId,
+                `✅ *Command sent to [${session.serverId.toUpperCase()}]*\n\n📝 *Command:* ${command}\n🖥️ *Session:* ${tmuxSession}\n🎯 *Target:* ${identifier}\n\nClaude is now processing your request...`,
                 { parse_mode: 'Markdown' });
-            
+
             // Log command execution
-            this.logger.info(`Command injected - User: ${chatId}, Session: ${identifier}, Command: ${command}`);
-            
+            this.logger.info(`Command executed - User: ${chatId}, Session: ${identifier}, Server: ${session.serverId}, Command: ${command}`);
+
         } catch (error) {
-            this.logger.error('Command injection failed:', error.message);
-            await this._sendMessage(chatId, 
+            this.logger.error('Command execution failed:', error.message);
+            await this._sendMessage(chatId,
                 `❌ *Command execution failed:* ${error.message}`,
                 { parse_mode: 'Markdown' });
         }
@@ -188,9 +178,9 @@ class TelegramWebhookHandler {
 
     async _sendWelcomeMessage(chatId) {
         const message = `🤖 *Welcome to Claude Code Remote Bot!*\n\n` +
-            `I'll notify you when Claude completes tasks or needs input.\n\n` +
-            `When you receive a notification, you can send commands back using simple numbers:\n` +
-            `\`/cmd 1 <your command>\`\n\n` +
+            `I'll notify you when Claude completes tasks across multiple servers.\n\n` +
+            `When you receive a notification, send commands using server:number format:\n` +
+            `\`/cmd kr4:1 <your command>\`\n\n` +
             `Type /help for more information.`;
 
         await this._sendMessage(chatId, message, { parse_mode: 'Markdown' });
@@ -201,17 +191,18 @@ class TelegramWebhookHandler {
             `*Commands:*\n` +
             `• \`/start\` - Welcome message\n` +
             `• \`/help\` - Show this help\n` +
-            `• \`/cmd <NUMBER> <command>\` - Send command to Claude\n\n` +
-            `*Example:*\n` +
-            `\`/cmd 1 show me the latest changes\`\n\n` +
-            `*Session Numbering:*\n` +
-            `• #1 is always the most recent session (any project)\n` +
-            `• As new sessions are created, older ones become #2, #3, etc.\n` +
-            `• Each notification shows which project it belongs to\n` +
+            `• \`/cmd <server>:<number> <command>\` - Send command to Claude\n\n` +
+            `*Examples:*\n` +
+            `\`/cmd kr4:1 analyze this code\`\n` +
+            `\`/cmd local:1 show me the latest changes\`\n\n` +
+            `*Multi-Server Support:*\n` +
+            `• Each server has its own session numbering (kr4:1, local:1, etc.)\n` +
+            `• Notifications show which server they came from: [KR4], [LOCAL]\n` +
             `• Sessions expire after 24 hours\n\n` +
-            `*Tips:*\n` +
-            `• You can type \`1 <command>\` without /cmd prefix\n` +
-            `• Old token format (ABC12345) still works`;
+            `*Server Format:*\n` +
+            `• \`kr4:1\` - Session #1 on builder-kr-4 server\n` +
+            `• \`local:1\` - Session #1 on local machine\n` +
+            `• \`aws1:1\` - Session #1 on AWS server (if configured)`;
 
         await this._sendMessage(chatId, message, { parse_mode: 'Markdown' });
     }
@@ -256,62 +247,6 @@ class TelegramWebhookHandler {
         
         // Fallback to configured username or default
         return this.config.botUsername || 'claude_remote_bot';
-    }
-
-    async _findSessionByIdentifier(identifier) {
-        const files = fs.readdirSync(this.sessionsDir);
-        const sessions = [];
-
-        // First, load all active sessions
-        for (const file of files) {
-            if (!file.endsWith('.json')) continue;
-
-            const sessionPath = path.join(this.sessionsDir, file);
-            try {
-                const session = JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
-
-                // Skip expired sessions
-                if (session.expiresAt && session.expiresAt < Math.floor(Date.now() / 1000)) {
-                    continue;
-                }
-
-                sessions.push(session);
-            } catch (error) {
-                this.logger.error(`Failed to read session file ${file}:`, error.message);
-            }
-        }
-
-        // Check if identifier is a number
-        if (/^\d+$/.test(identifier)) {
-            const sessionNumber = parseInt(identifier);
-
-            // Sort sessions by creation time (newest first)
-            sessions.sort((a, b) => b.createdAt - a.createdAt);
-
-            // Find session by number (1 = most recent, 2 = second most recent, etc.)
-            if (sessionNumber > 0 && sessionNumber <= sessions.length) {
-                return sessions[sessionNumber - 1];
-            }
-        } else {
-            // Find by token
-            const token = identifier.toUpperCase();
-            return sessions.find(s => s.token === token) || null;
-        }
-
-        return null;
-    }
-
-    async _findSessionByToken(token) {
-        // Backward compatibility - redirect to _findSessionByIdentifier
-        return this._findSessionByIdentifier(token);
-    }
-
-    async _removeSession(sessionId) {
-        const sessionFile = path.join(this.sessionsDir, `${sessionId}.json`);
-        if (fs.existsSync(sessionFile)) {
-            fs.unlinkSync(sessionFile);
-            this.logger.debug(`Session removed: ${sessionId}`);
-        }
     }
 
     async _sendMessage(chatId, text, options = {}) {
