@@ -699,6 +699,40 @@ Session: kr4:1
 
 ### Adding New Servers
 
+#### Automated Method (Recommended)
+
+**One-command server addition:**
+
+```bash
+# From central hub directory
+cd ~/Claude-Code-Remote
+
+./scripts/add-remote-server.sh user@hostname server-id central-hub-ip
+```
+
+**Example:**
+```bash
+./scripts/add-remote-server.sh ubuntu@aws-server.com aws1 192.168.1.100
+```
+
+**What it does:**
+1. ✅ Tests SSH connection
+2. ✅ Installs Claude-Code-Remote on remote server
+3. ✅ Configures .env with correct settings
+4. ✅ Updates local `config/servers.json` automatically
+5. ✅ Provides test commands
+
+**Helper Commands:**
+```bash
+# List all configured servers
+./scripts/list-servers.sh
+
+# Check system status
+./scripts/status.sh
+```
+
+#### Manual Method
+
 **Install on new server:**
 
 ```bash
