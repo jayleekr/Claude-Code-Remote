@@ -108,6 +108,27 @@ else
 fi
 echo ""
 
+# Check caffeinate (screen sleep prevention)
+echo "☕ Screen Sleep Prevention:"
+if [ -f logs/caffeinate.pid ]; then
+    CAFFEINATE_PID=$(cat logs/caffeinate.pid)
+    if ps -p $CAFFEINATE_PID > /dev/null 2>&1; then
+        echo -e "   ${GREEN}✅ Active (PID: $CAFFEINATE_PID)${NC}"
+        echo "   Mac will not sleep while services are running"
+    else
+        echo -e "   ${YELLOW}⚠️  PID file exists but process not running${NC}"
+        rm -f logs/caffeinate.pid
+    fi
+elif pgrep -f "caffeinate -d -i -s" >/dev/null 2>&1; then
+    PID=$(pgrep -f "caffeinate -d -i -s")
+    echo -e "   ${GREEN}✅ Active (PID: $PID)${NC}"
+    echo "   Mac will not sleep while services are running"
+else
+    echo -e "   ${RED}❌ Not running${NC}"
+    echo "   Start with: ./scripts/start-all.sh"
+fi
+echo ""
+
 # Check environment
 echo "⚙️  Environment:"
 if [ -f .env ]; then
@@ -131,8 +152,9 @@ fi
 echo ""
 
 echo "💡 Quick Commands:"
-echo "   • Start aggregator:  node start-aggregator.js"
-echo "   • Start webhook:     node start-webhook.js"
+echo "   • Start all:         ./scripts/start-all.sh"
+echo "   • Stop all:          ./scripts/stop-all.sh"
+echo "   • Restart all:       ./scripts/restart-all.sh"
 echo "   • List servers:      ./scripts/list-servers.sh"
 echo "   • Add server:        ./scripts/add-remote-server.sh <host> <id> <ip>"
 echo "   • View sessions:     curl http://localhost:3001/sessions | jq"

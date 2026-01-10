@@ -62,9 +62,53 @@ class SessionManager {
      * @returns {Object} Created session object
      */
     async createSession({ serverId, project, metadata = {} }) {
+        const now = Math.floor(Date.now() / 1000);
+        const tmuxSession = metadata.tmuxSession || 'claude-session';
+
+        // Check if session already exists for this tmux session
+        const existingStmt = this.db.prepare(`
+            SELECT * FROM sessions
+            WHERE serverId = ? AND tmuxSession = ? AND expiresAt > ?
+        `);
+        const existing = existingStmt.get(serverId, tmuxSession, now);
+
+        if (existing) {
+            // Update existing session instead of creating new one
+            const updateStmt = this.db.prepare(`
+                UPDATE sessions
+                SET project = ?,
+                    expiresAt = ?,
+                    metadata = ?
+                WHERE id = ?
+            `);
+
+            const newExpiry = now + (24 * 60 * 60); // 24 hours from now
+            updateStmt.run(
+                project,
+                newExpiry,
+                JSON.stringify(metadata),
+                existing.id
+            );
+
+            console.log(`🔄 Session updated: ${serverId}:${existing.serverNumber} (${existing.token})`);
+
+            // Return updated session with parsed metadata
+            return {
+                id: existing.id,
+                serverId: existing.serverId,
+                serverNumber: existing.serverNumber,
+                token: existing.token,
+                project,
+                tmuxSession: existing.tmuxSession,
+                createdAt: existing.createdAt,
+                expiresAt: newExpiry,
+                metadata
+            };
+        }
+
+        // Create new session if none exists
         const serverNumber = this._getNextServerNumber(serverId);
         const token = this._generateToken();
-        const now = Math.floor(Date.now() / 1000);
 
         const session = {
             id: uuidv4(),
@@ -72,7 +116,7 @@ class SessionManager {
             serverNumber,
             token,
             project,
-            tmuxSession: metadata.tmuxSession || 'claude-session',
+            tmuxSession,
             createdAt: now,
             expiresAt: now + (24 * 60 * 60), // 24 hours
             metadata: JSON.stringify(metadata)

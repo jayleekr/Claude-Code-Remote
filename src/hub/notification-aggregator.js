@@ -94,21 +94,36 @@ class NotificationAggregator {
         // 4. Update server status
         this.serverRegistry.updateServerStatus(serverId, 'active');
 
-        // 5. Create session with server context
+        // 5. Create or update session with server context
         const session = await this.sessionManager.createSession({
             serverId,
             project,
             metadata: metadata || {}
         });
 
-        console.log(`✅ Session created: ${serverId}:${session.serverNumber} (${session.token})`);
+        // SessionManager already logs whether session was created or updated
 
-        // 6. Generate Telegram message with server prefix
-        const message = this._formatMessage(serverId, session, metadata || {});
+        // 6. Prepare notification object for Telegram
+        const notification = {
+            type,
+            title: `[${serverId.toUpperCase()}] Claude Task ${type === 'completed' ? 'Completed' : 'Waiting'}`,
+            message: this._formatMessage(serverId, session, metadata || {}),
+            project,
+            metadata: {
+                ...metadata,
+                session: {
+                    id: session.id,
+                    serverId,
+                    serverNumber: session.serverNumber,
+                    token: session.token,
+                    identifier: `${serverId}:${session.serverNumber}`
+                }
+            }
+        };
 
         // 7. Send to Telegram
         try {
-            await this.telegramChannel.send(message, session);
+            await this.telegramChannel.send(notification);
             console.log(`✅ Notification forwarded to Telegram`);
 
             res.status(200).json({

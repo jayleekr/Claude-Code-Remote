@@ -15,6 +15,17 @@ echo "======================================"
 # Create logs directory
 mkdir -p logs
 
+# Start caffeinate to prevent Mac from sleeping
+if pgrep -f "caffeinate -d -i -s" >/dev/null 2>&1; then
+    echo -e "${YELLOW}⚠️  Caffeinate already running (screen will stay awake)${NC}"
+else
+    echo "☕ Preventing Mac from sleeping..."
+    caffeinate -d -i -s > logs/caffeinate.log 2>&1 &
+    CAFFEINATE_PID=$!
+    echo $CAFFEINATE_PID > logs/caffeinate.pid
+    echo -e "${GREEN}✅ Screen sleep prevention enabled (PID: $CAFFEINATE_PID)${NC}"
+fi
+
 # Start Notification Aggregator
 if lsof -ti :3001 >/dev/null 2>&1; then
     echo -e "${YELLOW}⚠️  Notification Aggregator already running on port 3001${NC}"
@@ -101,10 +112,20 @@ echo ""
 echo "📊 Service Status:"
 ./scripts/status.sh | grep -A 10 "Service Status"
 
+# Display caffeinate info
+if [ -f logs/caffeinate.pid ]; then
+    CAFFEINATE_PID=$(cat logs/caffeinate.pid)
+    if ps -p $CAFFEINATE_PID > /dev/null 2>&1; then
+        echo ""
+        echo "☕ Screen Sleep Prevention: Active (PID: $CAFFEINATE_PID)"
+    fi
+fi
+
 echo ""
 echo "📋 Quick Commands:"
 echo "   Status:    ./scripts/status.sh"
 echo "   Stop:      ./scripts/stop-all.sh"
+echo "   Restart:   ./scripts/restart-all.sh"
 echo "   Sessions:  /sessions (in Telegram)"
 echo "   Logs:      tail -f logs/*.log"
 echo ""

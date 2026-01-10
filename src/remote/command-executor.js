@@ -43,10 +43,15 @@ class CommandExecutor {
             // Escape single quotes for shell
             const escapedCmd = command.replace(/'/g, "'\\''");
 
-            // Send to tmux session
-            const tmuxCommand = `tmux send-keys -t ${tmuxSession} '${escapedCmd}' Enter`;
+            // Send command text first
+            const sendTextCmd = `tmux send-keys -t ${tmuxSession} '${escapedCmd}'`;
+            console.log(`🔧 [DEBUG] Step 1 - Sending text: ${sendTextCmd}`);
+            execSync(sendTextCmd, { stdio: 'inherit', shell: '/bin/bash' });
 
-            execSync(tmuxCommand, { stdio: 'inherit' });
+            // Send Enter key separately as a second command
+            const sendEnterCmd = `tmux send-keys -t ${tmuxSession} Enter`;
+            console.log(`🔧 [DEBUG] Step 2 - Sending Enter key: ${sendEnterCmd}`);
+            execSync(sendEnterCmd, { stdio: 'inherit', shell: '/bin/bash' });
 
             console.log(`✅ Command sent to local tmux session: ${tmuxSession}`);
             return true;
