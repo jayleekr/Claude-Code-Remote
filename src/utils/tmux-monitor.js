@@ -4,11 +4,11 @@
  * Based on the original email automation mechanism but adapted for real-time notifications
  */
 
-const { execSync } = require('child_process');
-const EventEmitter = require('events');
-const fs = require('fs');
-const path = require('path');
-const TraceCapture = require('./trace-capture');
+import { execSync } from 'child_process';
+import EventEmitter from 'events';
+import fs from 'fs';
+import path from 'path';
+import TraceCapture from './trace-capture.js';
 
 class TmuxMonitor extends EventEmitter {
     constructor(sessionName = null) {
@@ -742,4 +742,4 @@ class TmuxMonitor extends EventEmitter {
     }
 }
 
-module.exports = TmuxMonitor;
+export default TmuxMonitor;

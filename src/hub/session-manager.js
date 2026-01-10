@@ -1,7 +1,7 @@
-const Database = require('better-sqlite3');
-const { v4: uuidv4 } = require('uuid');
-const path = require('path');
-const fs = require('fs');
+import Database from 'better-sqlite3';
+import { v4 as uuidv4 } from 'uuid';
+import path from 'path';
+import fs from 'fs';
 
 /**
  * Session Manager with Server-Aware Numbering
@@ -29,6 +29,11 @@ class SessionManager {
      * Initialize database schema
      */
     _initDatabase() {
+        // Enable WAL mode for better concurrency
+        this.db.pragma('journal_mode = WAL');
+        this.db.pragma('synchronous = NORMAL');
+        this.db.pragma('cache_size = -64000'); // 64MB cache
+
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
@@ -39,6 +44,7 @@ class SessionManager {
                 tmuxSession TEXT NOT NULL,
                 createdAt INTEGER NOT NULL,
                 expiresAt INTEGER NOT NULL,
+                status TEXT DEFAULT 'active',
                 metadata TEXT,
                 UNIQUE(serverId, serverNumber)
             );
@@ -47,6 +53,7 @@ class SessionManager {
             CREATE INDEX IF NOT EXISTS idx_token ON sessions(token);
             CREATE INDEX IF NOT EXISTS idx_expiresAt ON sessions(expiresAt);
             CREATE INDEX IF NOT EXISTS idx_serverNumber ON sessions(serverId, serverNumber);
+            CREATE INDEX IF NOT EXISTS idx_status ON sessions(status);
         `);
 
         console.log('✅ Database schema initialized');
@@ -281,12 +288,44 @@ class SessionManager {
     }
 
     /**
+     * Force WAL checkpoint
+     * Merges WAL file changes back to main database
+     */
+    checkpoint() {
+        try {
+            this.db.pragma('wal_checkpoint(TRUNCATE)');
+        } catch (error) {
+            console.error('⚠️ WAL checkpoint failed:', error.message);
+        }
+    }
+
+    /**
+     * Get WAL mode information and statistics
+     *
+     * @returns {Object} WAL configuration and status
+     */
+    getWALInfo() {
+        return {
+            journalMode: this.db.pragma('journal_mode', { simple: true }),
+            walAutocheckpoint: this.db.pragma('wal_autocheckpoint', { simple: true }),
+            synchronous: this.db.pragma('synchronous', { simple: true }),
+            cacheSize: this.db.pragma('cache_size', { simple: true })
+        };
+    }
+
+    /**
      * Close database connection
      */
     close() {
+        if (!this.db.open) {
+            return; // Already closed
+        }
+
+        // Checkpoint before closing to minimize WAL file size
+        this.checkpoint();
         this.db.close();
         console.log('✅ SessionManager database closed');
     }
 }
 
-module.exports = SessionManager;
+export default SessionManager;

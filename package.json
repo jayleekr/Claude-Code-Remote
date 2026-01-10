@@ -1,6 +1,7 @@
 {
   "name": "claude-code-remote",
   "version": "1.0.0",
+  "type": "module",
   "description": "Claude Code Smart Notification System - Send desktop notifications when Claude completes tasks or needs input",
   "main": "hook-notify.js",
   "scripts": {
@@ -13,7 +14,10 @@
     "relay:start": "INJECTION_MODE=pty node src/relay/relay-pty.js",
     "telegram": "node start-telegram-webhook.js",
     "line": "node start-line-webhook.js",
-    "webhooks": "node start-all-webhooks.js"
+    "webhooks": "node start-all-webhooks.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "keywords": [
     "claude-code",
@@ -74,6 +78,8 @@
     "LICENSE"
   ],
   "devDependencies": {
-    "eslint-formatter-compact": "^9.0.1"
+    "eslint-formatter-compact": "^9.0.1",
+    "vitest": "^2.1.8",
+    "@vitest/coverage-v8": "^2.1.8"
   }
 }

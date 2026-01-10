@@ -1,7 +1,7 @@
 // ESLint configuration for Claude Code Remote
 // Using flat config format (ESLint 9+)
 
-module.exports = [
+export default [
     {
         ignores: [
             'node_modules/**',
@@ -16,7 +16,7 @@ module.exports = [
         files: ['**/*.js'],
         languageOptions: {
             ecmaVersion: 2022,
-            sourceType: 'commonjs',
+            sourceType: 'module',
             globals: {
                 // Node.js globals
                 console: 'readonly',
@@ -24,9 +24,6 @@ module.exports = [
                 Buffer: 'readonly',
                 __dirname: 'readonly',
                 __filename: 'readonly',
-                module: 'readonly',
-                require: 'readonly',
-                exports: 'writable',
                 global: 'readonly',
                 setTimeout: 'readonly',
                 setInterval: 'readonly',
