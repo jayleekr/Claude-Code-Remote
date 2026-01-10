@@ -1,7 +1,8 @@
-const express = require('express');
-const SessionManager = require('./session-manager');
-const ServerRegistry = require('./server-registry');
-const TelegramChannel = require('../channels/telegram/telegram');
+import express from 'express';
+import SessionManager from './session-manager.js';
+import ServerRegistry from './server-registry.js';
+import TelegramChannel from '../channels/telegram/telegram.js';
+import DeadLetterQueue from '../reliability/dead-letter-queue.js';
 
 /**
  * Notification Aggregator
@@ -18,6 +19,18 @@ class NotificationAggregator {
         this.serverRegistry = new ServerRegistry(config.serverRegistryPath);
         this.sessionManager = new SessionManager(config.sessionManagerPath);
         this.telegramChannel = new TelegramChannel(config.telegram || {});
+
+        // Initialize Dead Letter Queue if enabled
+        if (config.deadLetterQueue?.enabled) {
+            this.dlq = new DeadLetterQueue({
+                ...config.deadLetterQueue,
+                logger: console
+            });
+            console.log(`✅ Dead Letter Queue enabled`);
+
+            // Start retry processor
+            this._startRetryProcessor();
+        }
 
         // Express app
         this.app = express();
@@ -41,6 +54,19 @@ class NotificationAggregator {
                 activeSessions: this.sessionManager.getAllSessions().length
             });
         });
+
+        // DLQ stats endpoint
+        if (this.dlq) {
+            this.app.get('/dlq/stats', async (req, res) => {
+                try {
+                    const stats = await this.getDLQStats();
+                    res.json(stats);
+                } catch (error) {
+                    console.error('❌ Error getting DLQ stats:', error);
+                    res.status(500).json({ error: 'Failed to get DLQ stats' });
+                }
+            });
+        }
 
         // Notification endpoint
         this.app.post('/notify', async (req, res) => {
@@ -94,21 +120,36 @@ class NotificationAggregator {
         // 4. Update server status
         this.serverRegistry.updateServerStatus(serverId, 'active');
 
-        // 5. Create session with server context
+        // 5. Create or update session with server context
         const session = await this.sessionManager.createSession({
             serverId,
             project,
             metadata: metadata || {}
         });
 
-        console.log(`✅ Session created: ${serverId}:${session.serverNumber} (${session.token})`);
+        // SessionManager already logs whether session was created or updated
 
-        // 6. Generate Telegram message with server prefix
-        const message = this._formatMessage(serverId, session, metadata || {});
+        // 6. Prepare notification object for Telegram
+        const notification = {
+            type,
+            title: `[${serverId.toUpperCase()}] Claude Task ${type === 'completed' ? 'Completed' : 'Waiting'}`,
+            message: this._formatMessage(serverId, session, metadata || {}),
+            project,
+            metadata: {
+                ...metadata,
+                session: {
+                    id: session.id,
+                    serverId,
+                    serverNumber: session.serverNumber,
+                    token: session.token,
+                    identifier: `${serverId}:${session.serverNumber}`
+                }
+            }
+        };
 
         // 7. Send to Telegram
         try {
-            await this.telegramChannel.send(message, session);
+            await this.telegramChannel.send(notification);
             console.log(`✅ Notification forwarded to Telegram`);
 
             res.status(200).json({
@@ -121,6 +162,17 @@ class NotificationAggregator {
             });
         } catch (error) {
             console.error('❌ Failed to send Telegram notification:', error);
+
+            // Store in DLQ if enabled
+            if (this.dlq) {
+                try {
+                    await this.dlq.enqueue('telegram_notification', notification, error);
+                    console.log('📦 Notification stored in DLQ for retry');
+                } catch (dlqError) {
+                    console.error('❌ Failed to store in DLQ:', dlqError);
+                }
+            }
+
             res.status(500).json({ error: 'Failed to send notification' });
         }
     }
@@ -174,10 +226,22 @@ Example: /cmd ${identifier} analyze code`;
      */
     stop() {
         return new Promise((resolve) => {
+            // Stop retry processor
+            if (this.retryInterval) {
+                clearInterval(this.retryInterval);
+                this.retryInterval = null;
+            }
+
             if (this.server) {
-                this.server.close(() => {
+                this.server.close(async () => {
                     console.log('✅ NotificationAggregator stopped');
                     this.sessionManager.close();
+
+                    // Close DLQ
+                    if (this.dlq) {
+                        await this.dlq.close();
+                    }
+
                     resolve();
                 });
             } else {
@@ -185,6 +249,92 @@ Example: /cmd ${identifier} analyze code`;
             }
         });
     }
+
+    /**
+     * Start automatic retry processor
+     * @private
+     */
+    _startRetryProcessor() {
+        if (!this.dlq) return;
+
+        // Process retries every 30 seconds
+        this.retryInterval = setInterval(async () => {
+            try {
+                await this._processRetries();
+            } catch (error) {
+                console.error('❌ Error processing DLQ retries:', error);
+            }
+        }, 30000);
+
+        console.log('✅ DLQ retry processor started (30s interval)');
+    }
+
+    /**
+     * Process pending retries from DLQ
+     * @private
+     */
+    async _processRetries() {
+        if (!this.dlq) return;
+
+        const pendingMessages = await this.dlq.dequeuePending(10);
+
+        if (pendingMessages.length === 0) {
+            return;
+        }
+
+        console.log(`🔄 Processing ${pendingMessages.length} pending DLQ messages`);
+
+        for (const message of pendingMessages) {
+            try {
+                const payload = JSON.parse(message.payload);
+
+                // Retry sending to Telegram
+                await this.telegramChannel.send(payload);
+
+                // Mark as successful
+                await this.dlq.recordSuccess(message.id);
+                console.log(`✅ DLQ message ${message.id} successfully retried`);
+
+            } catch (error) {
+                // Record failed retry attempt
+                await this.dlq.recordRetryAttempt(message.id, error);
+                console.warn(`⚠️ DLQ message ${message.id} retry failed (attempt ${message.attempt_count + 1}):`, error.message);
+            }
+        }
+    }
+
+    /**
+     * Get DLQ statistics
+     * @returns {Promise<object>} Statistics object
+     */
+    async getDLQStats() {
+        if (!this.dlq) {
+            return {
+                enabled: false,
+                pendingMessages: 0,
+                archivedMessages: 0,
+                totalMessages: 0,
+                byType: {}
+            };
+        }
+
+        const stats = await this.dlq.getStats();
+
+        // Get oldest message age
+        const pendingMessages = await this.dlq.dequeuePending(1);
+        let oldestMessageAge = null;
+
+        if (pendingMessages.length > 0) {
+            const oldestMessage = pendingMessages[0];
+            oldestMessageAge = Date.now() - oldestMessage.first_failed_at;
+        }
+
+        return {
+            enabled: true,
+            ...stats,
+            oldestMessageAge
+        };
+    }
 }
 
-module.exports = NotificationAggregator;
+export default NotificationAggregator;

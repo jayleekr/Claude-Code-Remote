@@ -3,8 +3,8 @@
  * Tracks user input timestamps for smart execution trace capture
  */
 
-const fs = require('fs');
-const path = require('path');
+import fs from 'fs';
+import path from 'path';
 
 class TraceCapture {
     constructor() {
@@ -112,4 +112,4 @@ class TraceCapture {
     }
 }
 
-module.exports = TraceCapture;
+export default TraceCapture;

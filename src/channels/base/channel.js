@@ -3,7 +3,7 @@
  * Abstract base class for all notification channels
  */
 
-const Logger = require('../../core/logger');
+import Logger from '../../core/logger.js';
 
 class NotificationChannel {
     constructor(name, config = {}) {
@@ -120,4 +120,4 @@ class NotificationChannel {
     }
 }
 
-module.exports = NotificationChannel;
+export default NotificationChannel;

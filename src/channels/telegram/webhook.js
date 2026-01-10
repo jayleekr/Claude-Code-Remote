@@ -70,8 +70,11 @@ class TelegramWebhookHandler {
         const chatId = message.chat.id;
         const userId = message.from.id;
         const messageText = message.text?.trim();
-        
+
         if (!messageText) return;
+
+        // Log incoming message for duplicate detection
+        this.logger.info(`[WEBHOOK] Received message - ID: ${message.message_id}, Date: ${message.date}, User: ${userId}, Text: "${messageText}"`);
 
         // Check if user is authorized
         if (!this._isAuthorized(userId, chatId)) {
@@ -102,6 +105,7 @@ class TelegramWebhookHandler {
         // /cmd kr4:1 <command> or /cmd local:1 <command> or /cmd ABC12345 <command>
         const commandMatch = messageText.match(/^\/cmd\s+([a-z0-9]+:\d+|[A-Z0-9]{8})\s+(.+)$/i);
         if (!commandMatch) {
+            this.logger.warn(`[WEBHOOK] Invalid command format - Message ID: ${message.message_id}, Text: "${messageText}"`);
             await this._sendMessage(chatId,
                 '❌ Invalid format. Use:\n`/cmd <server>:<number> <command>`\n\nExample:\n`/cmd kr4:1 analyze this code`\n`/cmd local:1 show me the code`',
                 { parse_mode: 'Markdown' });
@@ -111,26 +115,25 @@ class TelegramWebhookHandler {
         const identifier = commandMatch[1]; // server:number or token
         const command = commandMatch[2];
 
+        this.logger.info(`[WEBHOOK] Processing command - Message ID: ${message.message_id}, Identifier: ${identifier}, Command: "${command}"`);
         await this._processCommand(chatId, identifier, command);
     }
 
     async _processCommand(chatId, identifier, command) {
-        // Find session via SessionManager
+        // Find session via SessionManager (already filters expired sessions in SQL)
         const session = await this.sessionManager.findSession(identifier);
         if (!session) {
+            this.logger.warn(`[WEBHOOK] Session not found or expired - Identifier: ${identifier}, Chat: ${chatId}`);
             await this._sendMessage(chatId,
                 '❌ Invalid or expired session. Please wait for a new task notification.',
                 { parse_mode: 'Markdown' });
             return;
         }
 
-        // Check if session is expired (expiresAt is in seconds, Date.now() is in milliseconds)
-        if (session.expiresAt * 1000 < Date.now()) {
-            await this._sendMessage(chatId,
-                '❌ Session has expired. Please wait for a new task notification.',
-                { parse_mode: 'Markdown' });
-            return;
-        }
+        this.logger.info(`[WEBHOOK] Session found - Identifier: ${identifier}, Server: ${session.serverId}, Number: ${session.serverNumber}, Expires: ${new Date(session.expiresAt * 1000).toISOString()}`);
+
+        // SessionManager.findSession() already filters by expiresAt > current_timestamp
+        // No need for additional expiration check here
 
         try {
             // Execute command via CommandExecutor

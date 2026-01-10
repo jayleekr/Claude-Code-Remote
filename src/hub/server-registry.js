@@ -1,5 +1,10 @@
-const fs = require('fs');
-const path = require('path');
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 /**
  * Server Registry
@@ -139,6 +144,24 @@ class ServerRegistry {
     hasServer(serverId) {
         return this.servers.has(serverId);
     }
+
+    /**
+     * Register a new server dynamically (for testing)
+     *
+     * @param {string} serverId - Server identifier
+     * @param {string} sharedSecret - Shared secret for authentication
+     * @param {Object} metadata - Additional server metadata
+     */
+    registerServer(serverId, sharedSecret, metadata = {}) {
+        this.servers.set(serverId, {
+            id: serverId,
+            type: metadata.type || 'test',
+            status: 'unknown',
+            lastSeen: null,
+            ...metadata
+        });
+        console.log(`📦 Server registered dynamically: ${serverId}`);
+    }
 }
 
-module.exports = ServerRegistry;
+export default ServerRegistry;

@@ -1,7 +1,7 @@
-const Database = require('better-sqlite3');
-const { v4: uuidv4 } = require('uuid');
-const path = require('path');
-const fs = require('fs');
+import Database from 'better-sqlite3';
+import { v4 as uuidv4 } from 'uuid';
+import path from 'path';
+import fs from 'fs';
 
 /**
  * Session Manager with Server-Aware Numbering
@@ -29,6 +29,11 @@ class SessionManager {
      * Initialize database schema
      */
     _initDatabase() {
+        // Enable WAL mode for better concurrency
+        this.db.pragma('journal_mode = WAL');
+        this.db.pragma('synchronous = NORMAL');
+        this.db.pragma('cache_size = -64000'); // 64MB cache
+
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
@@ -39,6 +44,7 @@ class SessionManager {
                 tmuxSession TEXT NOT NULL,
                 createdAt INTEGER NOT NULL,
                 expiresAt INTEGER NOT NULL,
+                status TEXT DEFAULT 'active',
                 metadata TEXT,
                 UNIQUE(serverId, serverNumber)
             );
@@ -47,6 +53,7 @@ class SessionManager {
             CREATE INDEX IF NOT EXISTS idx_token ON sessions(token);
             CREATE INDEX IF NOT EXISTS idx_expiresAt ON sessions(expiresAt);
             CREATE INDEX IF NOT EXISTS idx_serverNumber ON sessions(serverId, serverNumber);
+            CREATE INDEX IF NOT EXISTS idx_status ON sessions(status);
         `);
 
         console.log('✅ Database schema initialized');
@@ -62,9 +69,53 @@ class SessionManager {
      * @returns {Object} Created session object
      */
     async createSession({ serverId, project, metadata = {} }) {
+        const now = Math.floor(Date.now() / 1000);
+        const tmuxSession = metadata.tmuxSession || 'claude-session';
+
+        // Check if session already exists for this tmux session
+        const existingStmt = this.db.prepare(`
+            SELECT * FROM sessions
+            WHERE serverId = ? AND tmuxSession = ? AND expiresAt > ?
+        `);
+        const existing = existingStmt.get(serverId, tmuxSession, now);
+
+        if (existing) {
+            // Update existing session instead of creating new one
+            const updateStmt = this.db.prepare(`
+                UPDATE sessions
+                SET project = ?,
+                    expiresAt = ?,
+                    metadata = ?
+                WHERE id = ?
+            `);
+
+            const newExpiry = now + (24 * 60 * 60); // 24 hours from now
+            updateStmt.run(
+                project,
+                newExpiry,
+                JSON.stringify(metadata),
+                existing.id
+            );
+
+            console.log(`🔄 Session updated: ${serverId}:${existing.serverNumber} (${existing.token})`);
+
+            // Return updated session with parsed metadata
+            return {
+                id: existing.id,
+                serverId: existing.serverId,
+                serverNumber: existing.serverNumber,
+                token: existing.token,
+                project,
+                tmuxSession: existing.tmuxSession,
+                createdAt: existing.createdAt,
+                expiresAt: newExpiry,
+                metadata
+            };
+        }
+
+        // Create new session if none exists
         const serverNumber = this._getNextServerNumber(serverId);
         const token = this._generateToken();
-        const now = Math.floor(Date.now() / 1000);
 
         const session = {
             id: uuidv4(),
@@ -72,7 +123,7 @@ class SessionManager {
             serverNumber,
             token,
             project,
-            tmuxSession: metadata.tmuxSession || 'claude-session',
+            tmuxSession,
             createdAt: now,
             expiresAt: now + (24 * 60 * 60), // 24 hours
             metadata: JSON.stringify(metadata)
@@ -237,12 +288,44 @@ class SessionManager {
     }
 
     /**
+     * Force WAL checkpoint
+     * Merges WAL file changes back to main database
+     */
+    checkpoint() {
+        try {
+            this.db.pragma('wal_checkpoint(TRUNCATE)');
+        } catch (error) {
+            console.error('⚠️ WAL checkpoint failed:', error.message);
+        }
+    }
+
+    /**
+     * Get WAL mode information and statistics
+     *
+     * @returns {Object} WAL configuration and status
+     */
+    getWALInfo() {
+        return {
+            journalMode: this.db.pragma('journal_mode', { simple: true }),
+            walAutocheckpoint: this.db.pragma('wal_autocheckpoint', { simple: true }),
+            synchronous: this.db.pragma('synchronous', { simple: true }),
+            cacheSize: this.db.pragma('cache_size', { simple: true })
+        };
+    }
+
+    /**
      * Close database connection
      */
     close() {
+        if (!this.db.open) {
+            return; // Already closed
+        }
+
+        // Checkpoint before closing to minimize WAL file size
+        this.checkpoint();
         this.db.close();
         console.log('✅ SessionManager database closed');
     }
 }
 
-module.exports = SessionManager;
+export default SessionManager;
