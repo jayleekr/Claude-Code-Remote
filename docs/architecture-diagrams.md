@@ -165,22 +165,22 @@ sequenceDiagram
 stateDiagram-v2
     [*] --> Created: Notification received
 
-    Created --> Active: Session ID assigned<br/>(e.g., kr4:1)
+    Created --> Active: Session ID assigned (e.g., kr4:1)
 
-    Active --> Active: Commands executed<br/>within 24h
+    Active --> Active: Commands executed within 24h
     Active --> Expired: 24 hours elapsed
-    Active --> Replaced: New session created<br/>(becomes kr4:2)
+    Active --> Replaced: New session created (becomes kr4:2)
 
-    Replaced --> Active: Renumbered<br/>(kr4:1 → kr4:2)
+    Replaced --> Active: Renumbered (kr4:1 to kr4:2)
 
     Expired --> Deleted: Cleanup job
     Deleted --> [*]
 
-    note right of Created: Token generated<br/>(e.g., ABC12345)
+    note right of Created: Token generated (e.g., ABC12345)
 
-    note right of Active: Available for commands<br/>/cmd kr4:1 command
+    note right of Active: Available for commands - /cmd kr4:1 command
 
-    note right of Expired: Session not usable<br/>Error: Session expired
+    note right of Expired: Session not usable - Error: Session expired
 ```
 
 ---
