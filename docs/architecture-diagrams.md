@@ -176,20 +176,11 @@ stateDiagram-v2
     Expired --> Deleted: Cleanup job
     Deleted --> [*]
 
-    note right of Created
-        Token generated
-        (e.g., ABC12345)
-    end note
+    note right of Created: Token generated<br/>(e.g., ABC12345)
 
-    note right of Active
-        Available for commands
-        /cmd kr4:1 <command>
-    end note
+    note right of Active: Available for commands<br/>/cmd kr4:1 command
 
-    note right of Expired
-        Session not usable
-        Error: Session expired
-    end note
+    note right of Expired: Session not usable<br/>Error: Session expired
 ```
 
 ---
