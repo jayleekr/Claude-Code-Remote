@@ -3,13 +3,18 @@
  * Sends notifications via Telegram Bot API with command support
  */
 
-const NotificationChannel = require('../base/channel');
-const axios = require('axios');
-const { v4: uuidv4 } = require('uuid');
-const path = require('path');
-const fs = require('fs');
-const TmuxMonitor = require('../../utils/tmux-monitor');
-const { execSync } = require('child_process');
+import NotificationChannel from '../base/channel.js';
+import axios from 'axios';
+import { v4 as uuidv4 } from 'uuid';
+import path from 'path';
+import fs from 'fs';
+import TmuxMonitor from '../../utils/tmux-monitor.js';
+import { execSync } from 'child_process';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 class TelegramChannel extends NotificationChannel {
     constructor(config = {}) {
@@ -305,4 +310,4 @@ class TelegramChannel extends NotificationChannel {
     }
 }
 
-module.exports = TelegramChannel;
+export default TelegramChannel;

@@ -1,17 +1,48 @@
-const { NodeSSH } = require('node-ssh');
-const { execSync } = require('child_process');
+import { NodeSSH } from 'node-ssh';
+import { execSync } from 'child_process';
+import RetryMiddleware from '../reliability/retry-middleware.js';
+import CircuitBreaker from '../reliability/circuit-breaker.js';
+import { CircuitOpenError } from '../reliability/errors.js';
 
 /**
- * Command Executor
+ * Command Executor with Reliability Layer Integration
  *
  * Executes commands on local or remote servers via tmux
  * - Local: Direct tmux send-keys
  * - Remote: SSH + tmux send-keys with connection pooling
+ * - Reliability: Retry middleware + circuit breaker for fault tolerance
  */
 class CommandExecutor {
     constructor(serverRegistry) {
         this.serverRegistry = serverRegistry;
         this.sshConnections = new Map(); // Connection pool
+
+        // Initialize reliability components
+        this.retryMiddleware = new RetryMiddleware({
+            logger: console
+        });
+
+        this.circuitBreakers = new Map(); // Circuit breaker per server
+
+        // Initialize circuit breakers for all registered servers
+        this._initializeCircuitBreakers();
+    }
+
+    /**
+     * Initialize circuit breakers for all servers
+     */
+    _initializeCircuitBreakers() {
+        const servers = this.serverRegistry.getAllServers();
+        for (const server of servers) {
+            if (server.type === 'remote') {
+                this.circuitBreakers.set(server.id, new CircuitBreaker({
+                    failureThreshold: 5,
+                    successThreshold: 2,
+                    timeout: 30000,
+                    name: server.id
+                }));
+            }
+        }
     }
 
     /**
@@ -62,32 +93,77 @@ class CommandExecutor {
     }
 
     /**
-     * Execute command remotely via SSH + tmux
+     * Execute command remotely via SSH + tmux with retry and circuit breaker
      */
     async _executeRemote(server, command, tmuxSession) {
-        const ssh = await this._getSSHConnection(server);
+        // Ensure circuit breaker exists for this server
+        if (!this.circuitBreakers.has(server.id)) {
+            this.circuitBreakers.set(server.id, new CircuitBreaker({
+                failureThreshold: 5,
+                successThreshold: 2,
+                timeout: 30000,
+                name: server.id
+            }));
+        }
 
+        const circuitBreaker = this.circuitBreakers.get(server.id);
+
+        // Check circuit breaker state BEFORE attempting operation
+        if (circuitBreaker.isOpen()) {
+            const error = new CircuitOpenError(
+                `Server ${server.id} temporarily unavailable due to repeated failures`,
+                server.id,
+                30
+            );
+            console.error(`⚡ Circuit breaker OPEN for ${server.id}`);
+            throw error;
+        }
+
+        // Wrap SSH operation with retry middleware
         try {
-            // Escape single quotes for SSH
-            const escapedCmd = command.replace(/'/g, "'\\''");
+            const result = await this.retryMiddleware.executeWithRetry(async () => {
+                const ssh = await this._getSSHConnection(server);
 
-            // Build SSH command
-            const sshCommand = `tmux send-keys -t ${tmuxSession} '${escapedCmd}' Enter`;
+                // Escape single quotes for SSH
+                const escapedCmd = command.replace(/'/g, "'\\''");
 
-            console.log(`🔗 SSH command: ${sshCommand}`);
+                // Build SSH command
+                const sshCommand = `tmux send-keys -t ${tmuxSession} '${escapedCmd}' Enter`;
 
-            const result = await ssh.execCommand(sshCommand);
+                console.log(`🔗 SSH command: ${sshCommand}`);
 
-            if (result.code !== 0) {
-                throw new Error(`SSH command failed: ${result.stderr}`);
-            }
+                const execResult = await ssh.execCommand(sshCommand);
 
-            console.log(`✅ Command sent to remote tmux session: ${tmuxSession}`);
-            return true;
+                if (execResult.code !== 0) {
+                    throw new Error(`SSH command failed: ${execResult.stderr}`);
+                }
+
+                console.log(`✅ Command sent to remote tmux session: ${tmuxSession}`);
+                return true;
+            }, 'ssh');
+
+            // Record success in circuit breaker
+            circuitBreaker.recordSuccess();
+
+            return result;
         } catch (error) {
+            // Record failure in circuit breaker
+            circuitBreaker.recordFailure();
+
             // Remove failed connection from pool
             this.sshConnections.delete(server.id);
-            console.error(`❌ Failed to execute remote command:`, error.message);
+
+            console.error(`❌ Failed to execute remote command after retries:`, error.message);
+
+            // Preserve original error context
+            if (error.code) {
+                const enhancedError = new Error(error.message);
+                enhancedError.code = error.code;
+                enhancedError.hostname = error.hostname || server.hostname;
+                enhancedError.originalError = error;
+                throw enhancedError;
+            }
+
             throw error;
         }
     }
@@ -145,4 +221,4 @@ class CommandExecutor {
     }
 }
 
-module.exports = CommandExecutor;
+export default CommandExecutor;
